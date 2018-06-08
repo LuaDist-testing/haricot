@@ -27,65 +27,67 @@ local valid_name = function(x)
 end
 
 local getline = function(self)
-  return self.cnx:receive("*l") or "NOT_CONNECTED"
+  return (self.cnx and self.cnx:receive("*l")) or "NOT_CONNECTED"
 end
 
-local mkcmd = function(cmd,...)
-  return table.concat({cmd,...}," ") .. "\r\n"
+local mkcmd = function(cmd, ...)
+  return table.concat({cmd, ...}, " ") .. "\r\n"
 end
 
-local call = function(self,cmd,...)
-  self.cnx:send(mkcmd(cmd,...))
+local call = function(self, cmd, ...)
+  if not self.cnx then return "NOT_CONNECTED" end
+  self.cnx:send(mkcmd(cmd, ...))
   return getline(self)
 end
 
-local recv = function(self,bytes)
+local recv = function(self, bytes)
+  if not self.cnx then return nil end
   assert(is_posint(bytes))
   local r = self.cnx:receive(bytes+2)
   if r then
-    return r:sub(1,bytes)
+    return r:sub(1, bytes)
   else return nil end
 end
 
-local expect_simple = function(res,s)
-  if res:match(string.format("^%s$",s)) then
+local expect_simple = function(res, s)
+  if res:match(string.format("^%s$", s)) then
     return true
   else
-    return false,res
+    return false, res
   end
 end
 
-local expect_int = function(res,s)
-  local id = tonumber(res:match(string.format("^%s (%%d+)$",s)))
+local expect_int = function(res, s)
+  local id = tonumber(res:match(string.format("^%s (%%d+)$", s)))
   if id then
-    return true,id
+    return true, id
   else
-    return false,res
+    return false, res
   end
 end
 
-local expect_data = function(self,res)
+local expect_data = function(self, res)
   local bytes = tonumber(res:match("^OK (%d+)$"))
   if bytes then
-    local data = recv(self,bytes)
+    local data = recv(self, bytes)
     if data then
       assert(#data == bytes)
-      return true,data
+      return true, data
     else
-      return false,"NOT_CONNECTED"
+      return false, "NOT_CONNECTED"
     end
   else
-    return false,res
+    return false, res
   end
 end
 
-local expect_job_body = function(self,bytes,id)
-  local data = recv(self,bytes)
+local expect_job_body = function(self, bytes, id)
+  local data = recv(self, bytes)
   if data then
     assert(#data == bytes)
-    return true,{id=id,data=data}
+    return true, {id = id, data = data}
   else
-    return false,"NOT_CONNECTED"
+    return false, "NOT_CONNECTED"
   end
 end
 
@@ -93,15 +95,28 @@ end
 
 -- connection
 
-local connect = function(self,server,port)
+local connect = function(self, server, port)
+  if self.cnx ~= nil then self:disconnect() end
   self.cnx = socket.tcp()
-  self.cnx:connect(server,port)
+  local co, err = self.cnx:connect(server,port)
+  if co == nil then return false, err end
   return true
+end
+
+local disconnect = function(self)
+  if self.cnx ~= nil then
+    self:quit()
+    self.cnx:close()
+    self.cnx = nil
+    return true
+  end
+  return false, "NOT_CONNECTED"
 end
 
 -- producer
 
-local put = function(self,pri,delay,ttr,data)
+local put = function(self, pri, delay, ttr, data)
+  if not self.cnx then return false, "NOT_CONNECTED" end
   assert(
     is_posint(pri) and (pri < 2^32) and
     is_posint(delay) and
@@ -109,182 +124,185 @@ local put = function(self,pri,delay,ttr,data)
   )
   local bytes = #data
   assert(bytes < self.cfg.max_job_size)
-  local cmd = mkcmd("put",pri,delay,ttr,bytes) .. data .. "\r\n"
+  local cmd = mkcmd("put", pri, delay, ttr, bytes) .. data .. "\r\n"
   self.cnx:send(cmd)
   local res = getline(self)
-  return expect_int(res,"INSERTED")
+  return expect_int(res, "INSERTED")
 end
 
-local use = function(self,tube)
+local use = function(self, tube)
   assert(valid_name(tube))
-  local res = call(self,"use",tube)
+  local res = call(self, "use", tube)
   local ok = res:match("^USING ([%w-_+/;.$()]+)$")
   ok = (ok == tube)
   if ok then
     return true
   else
-    return false,res
+    return false, res
   end
 end
 
 -- consumer
 
 local reserve = function(self)
-  local res = call(self,"reserve")
-  local id,bytes = res:match("^RESERVED (%d+) (%d+)$")
+  local res = call(self, "reserve")
+  local id, bytes = res:match("^RESERVED (%d+) (%d+)$")
   if id --[[and bytes]] then
-    id,bytes = tonumber(id),tonumber(bytes)
-    return expect_job_body(self,bytes,id)
+    id, bytes = tonumber(id), tonumber(bytes)
+    return expect_job_body(self, bytes, id)
   else
-    return false,res
+    return false, res
   end
 end
 
-local reserve_with_timeout = function(self,timeout)
+local reserve_with_timeout = function(self, timeout)
   assert(is_posint(timeout))
-  local res = call(self,"reserve-with-timeout",timeout)
-  local id,bytes = res:match("^RESERVED (%d+) (%d+)$")
+  local res = call(self, "reserve-with-timeout", timeout)
+  local id, bytes = res:match("^RESERVED (%d+) (%d+)$")
   if id --[[and bytes]] then
-    id,bytes = tonumber(id),tonumber(bytes)
-    return expect_job_body(self,bytes,id)
+    id, bytes = tonumber(id), tonumber(bytes)
+    return expect_job_body(self, bytes, id)
   else
-    return expect_simple(res,"TIMED_OUT")
+    return expect_simple(res, "TIMED_OUT")
   end
 end
 
-local delete = function(self,id)
+local delete = function(self, id)
   assert(is_posint(id))
-  local res = call(self,"delete",id)
-  return expect_simple(res,"DELETED")
+  local res = call(self, "delete", id)
+  return expect_simple(res, "DELETED")
 end
 
-local release = function(self,id,pri,delay)
+local release = function(self, id, pri, delay)
   assert(
     is_posint(id) and
     is_posint(pri) and (pri < 2^32) and
     is_posint(delay)
   )
-  local res = call(self,"release",id,pri,delay)
-  return(expect_simple(res,"RELEASED"))
+  local res = call(self, "release", id, pri, delay)
+  return(expect_simple(res, "RELEASED"))
 end
 
-local bury = function(self,id,pri)
+local bury = function(self, id, pri)
   assert(
     is_posint(id) and
     is_posint(pri) and (pri < 2^32)
   )
-  local res = call(self,"bury",id,pri)
-  return expect_simple(res,"BURIED")
+  local res = call(self, "bury", id, pri)
+  return expect_simple(res, "BURIED")
 end
 
-local touch = function(self,id)
+local touch = function(self, id)
   assert(is_posint(id))
-  local res = call(self,"touch",id)
-  return expect_simple(res,"TOUCHED")
+  local res = call(self, "touch", id)
+  return expect_simple(res, "TOUCHED")
 end
 
-local watch = function(self,tube)
+local watch = function(self, tube)
   assert(valid_name(tube))
-  local res = call(self,"watch",tube)
-  return expect_int(res,"WATCHING")
+  local res = call(self, "watch", tube)
+  return expect_int(res, "WATCHING")
 end
 
-local ignore = function(self,tube)
+local ignore = function(self, tube)
   assert(valid_name(tube))
-  local res = call(self,"ignore",tube)
-  return expect_int(res,"WATCHING")
+  local res = call(self, "ignore", tube)
+  return expect_int(res, "WATCHING")
 end
 
 -- other
 
-local _peek_result = function(self,res) -- private
-  local id,bytes = res:match("^FOUND (%d+) (%d+)$")
+local _peek_result = function(self, res) -- private
+  local id, bytes = res:match("^FOUND (%d+) (%d+)$")
   if id --[[and bytes]] then
-    id,bytes = tonumber(id),tonumber(bytes)
-    return expect_job_body(self,bytes,id)
+    id, bytes = tonumber(id), tonumber(bytes)
+    return expect_job_body(self, bytes, id)
   else
-    return expect_simple(res,"NOT_FOUND")
+    return expect_simple(res, "NOT_FOUND")
   end
 end
 
-local peek = function(self,id)
+local peek = function(self, id)
   assert(is_posint(id))
-  local res = call(self,"peek",id)
-  return _peek_result(self,res)
+  local res = call(self, "peek", id)
+  return _peek_result(self, res)
 end
 
 local make_peek = function(state)
   return function(self)
-    local res = call(self,string.format("peek-%s",state))
-    return _peek_result(self,res)
+    local res = call(self, string.format("peek-%s", state))
+    return _peek_result(self, res)
   end
 end
 
-local kick = function(self,bound)
+local kick = function(self, bound)
   assert(is_posint(bound))
-  local res = call(self,"kick",bound)
-  return expect_int(res,"KICKED")
+  local res = call(self, "kick", bound)
+  return expect_int(res, "KICKED")
 end
 
-local kick_job = function(self,id)
+local kick_job = function(self, id)
   assert(is_posint(id))
-  local res = call(self,"kick-job",id)
-  return expect_simple(res,"KICKED")
+  local res = call(self, "kick-job", id)
+  return expect_simple(res, "KICKED")
 end
 
-local stats_job = function(self,id)
+local stats_job = function(self, id)
   assert(is_posint(id))
-  local res = call(self,"stats-job",id)
-  return expect_data(self,res)
+  local res = call(self, "stats-job", id)
+  return expect_data(self, res)
 end
 
-local stats_tube = function(self,tube)
+local stats_tube = function(self, tube)
   assert(valid_name(tube))
-  local res = call(self,"stats-tube",tube)
-  return expect_data(self,res)
+  local res = call(self, "stats-tube", tube)
+  return expect_data(self, res)
 end
 
 local stats = function(self)
-  local res = call(self,"stats")
-  return expect_data(self,res)
+  local res = call(self, "stats")
+  return expect_data(self, res)
 end
 
 local list_tubes = function(self)
-  local res = call(self,"list-tubes")
-  return expect_data(self,res)
+  local res = call(self, "list-tubes")
+  return expect_data(self, res)
 end
 
 local list_tube_used = function(self)
-  local res = call(self,"list-tube-used")
+  local res = call(self, "list-tube-used")
   local tube = res:match("^USING ([%w-_+/;.$()]+)$")
   if tube then
-    return true,tube
+    return true, tube
   else
-    return false,res
+    return false, res
   end
 end
 
 local list_tubes_watched = function(self)
-  local res = call(self,"list-tubes-watched")
-  return expect_data(self,res)
+  local res = call(self, "list-tubes-watched")
+  return expect_data(self, res)
 end
 
 local quit = function(self)
+  if not self.cnx then return false, "NOT_CONNECTED" end
   self.cnx:send(mkcmd("quit"))
   return true
 end
 
-local pause_tube = function(self,tube,delay)
+local pause_tube = function(self, tube, delay)
   assert(valid_name(tube) and is_posint(delay))
-  local res = call(self,"pause-tube",tube,delay)
-  return expect_simple(res,"PAUSED")
+  local res = call(self, "pause-tube", tube, delay)
+  return expect_simple(res, "PAUSED")
 end
 
 --- class
 
 local methods = {
   -- connection
-  connect = connect, -- (server,port) -> ok
+  connect = connect, -- (server,port) -> ok,[err]
+  disconnect = disconnect, -- () -> ok,[err]
+
   -- producer
   put = put, -- (pri,delay,ttr,data) -> ok,[id|err]
   use = use, -- (tube) -> ok,[err]
@@ -314,12 +332,14 @@ local methods = {
   pause_tube = pause_tube, -- (tube,delay) -> ok,[err]
 }
 
-local new = function(server,port)
+local new = function(server, port)
   local r = {cfg = default_cfg()}
-  connect(r,server,port)
-  return setmetatable(r,{__index = methods})
+  local ok, err = connect(r, server, port)
+  return setmetatable(r, {__index = methods}), ok, err
 end
 
 return {
-  new = new,
+  new = new, -- instance,conn_ok,[err]
 }
+
+-- vim: set tabstop=2 softtabstop=2 shiftwidth=2 expandtab : --

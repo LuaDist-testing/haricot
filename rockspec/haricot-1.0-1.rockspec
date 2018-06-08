@@ -1,18 +1,10 @@
--- This file was automatically generated for the LuaDist project.
-
 package = "haricot"
 version = "1.0-1"
 
--- LuaDist source
 source = {
-  tag = "1.0-1",
-  url = "git://github.com/LuaDist-testing/haricot.git"
+   url = "http://files.catwell.info/code/releases/haricot-1.0.tar.gz",
+   md5 = "6293bc305e8253f2e18b64a8ed123e9a",
 }
--- Original source
--- source = {
---    url = "http://files.catwell.info/code/releases/haricot-1.0.tar.gz",
---    md5 = "6293bc305e8253f2e18b64a8ed123e9a",
--- }
 
 description = {
    summary = "A beanstalkd client.",
